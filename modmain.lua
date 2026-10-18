@@ -56,7 +56,7 @@ local native_lib = utils.native_lib
 if native_lib then
     AddSimPostInit(function()
         print("[说说你的Ping] 原生Ping采集已加载 (pingspy_x64.dll)")
-        MOD_util:DoPeriodicTask(1, function()
+        _G.staticScheduler:ExecutePeriodic(1, function()
             -- 直接查询：未就绪时 DLL 内部自动重试挂接并返回 -1；无值则静默等待（自报兑底不受影响）
             for _, client in ipairs(TheNet:GetClientTable() or {}) do
                 local userid = client.userid

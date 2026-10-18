@@ -25,15 +25,10 @@ AddPrefabPostInit("world", function(world)
     end)
 end)
 
-function MOD_util:DoTaskInTime(time, fn)
-    self.bbgoat_instance = self.bbgoat_instance or CreateEntity("bbgoat_instance")
-    return self.bbgoat_instance:DoTaskInTime(time, fn)
-end
-
-function MOD_util:DoPeriodicTask(interval, fn)
-    self.bbgoat_instance = self.bbgoat_instance or CreateEntity("bbgoat_instance")
-    return self.bbgoat_instance:DoPeriodicTask(interval, fn)
-end
+-- function MOD_util:DoTaskInTime(time, fn)
+--     self.bbgoat_instance = self.bbgoat_instance or CreateEntity("bbgoat_instance")
+--     return self.bbgoat_instance:DoTaskInTime(time, fn)
+-- end
 
 -------------------------------------------------------------------------------------------
 
