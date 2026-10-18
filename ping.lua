@@ -135,12 +135,31 @@ local Ping = Class(Widget, function(self, owner)
     end)
 end)
 
+local COLOUR = {
+    RED = RGB(242, 99, 99),
+    YELLOW = RGB(222, 222, 99),
+    GREEN = RGB(59, 242, 99)
+}
+local function GetColour(packetloss, default) -- 根据丢包率决定颜色(默认颜色)
+    if packetloss > 25 then
+        return COLOUR.RED
+    elseif packetloss > 0 then
+        return COLOUR.YELLOW
+    else
+        return default
+    end
+end
+local Ping_Style = GetModConfigData("Ping_Style", modname, true)
+local math_floor = math.floor
+local type = type
+local pairs = pairs
+
 function Ping:OnUpdate(dt)
     local NetworkStatistics = TheNet:GetNetworkStatistics() or {}
     local pingVal = NetworkStatistics.ping or -1
     local msgs_sent_lastsec = NetworkStatistics.msgs_sent_lastsec or 0
     local msgs_resent_lastsec = NetworkStatistics.msgs_resent_lastsec or 0
-    local packetloss = msgs_resent_lastsec > 0 and msgs_sent_lastsec > 0 and (math.floor((msgs_resent_lastsec / msgs_sent_lastsec * 100) * 10 + 0.5) / 10) or 0 -- 上一秒的丢包率
+    local packetloss = msgs_resent_lastsec > 0 and msgs_sent_lastsec > 0 and (math_floor(msgs_resent_lastsec / msgs_sent_lastsec * 1000 + 0.5) / 10) or 0 -- 上一秒的丢包率
 
     if pingVal ~= self.lastPingVal then
         self.need_update = true
@@ -158,7 +177,7 @@ function Ping:OnUpdate(dt)
                 self.need_update = true
             end
 
-            if k.netscore ~= nil and k.userid == my_userid then
+            if k.userid == my_userid and k.netscore ~= nil then
                 self.netscore = k.netscore -- 设置客户端网络性能
                 self.need_update = true
             end
@@ -174,23 +193,9 @@ function Ping:OnUpdate(dt)
             self.ping:SetText(STRINGS.SAYABOUTYOURPING.PING_SERVER)
             self.ping:SetTextColour(RGB(0, 255, 255))
         else
-            local COLOUR = {
-                RED = RGB(242, 99, 99),
-                YELLOW = RGB(222, 222, 99),
-                GREEN = RGB(59, 242, 99)
-            }
-            local function GetColour(default) -- 根据丢包率决定颜色(默认颜色)
-                if packetloss > 25 then
-                    return COLOUR.RED
-                elseif packetloss > 0 then
-                    return COLOUR.YELLOW
-                else
-                    return default
-                end
-            end
             local ping_text = "Ping: " .. pingVal .. "ms"
             local packetloss_text = STRINGS.SAYABOUTYOURPING.PACKETLOSS .. packetloss .. "%"
-            if GetModConfigData("Ping_Style", modname, true) then
+            if Ping_Style then
                 if (self.netscore) == 2 then -- 客户端网络性能较差
                     self.ping:SetTextColour(COLOUR.RED)
                     self.ping:SetText(ping_text .. "\n" .. (packetloss > 0 and packetloss_text or STRINGS.SAYABOUTYOURPING.PING_NETSCORE_BAD))
@@ -198,23 +203,23 @@ function Ping:OnUpdate(dt)
                     self.ping:SetTextColour(COLOUR.RED)
                     self.ping:SetText((packetloss > 0 and packetloss_text or ping_text) .. "\n" .. STRINGS.SAYABOUTYOURPING.PING_PERFORMANCE_BAD)
                 elseif (self.performance) == 1 then -- 服务器性能一般
-                    self.ping:SetTextColour(GetColour(COLOUR.YELLOW))
+                    self.ping:SetTextColour(GetColour(packetloss, COLOUR.YELLOW))
                     self.ping:SetText(ping_text .. "\n" .. (packetloss > 0 and packetloss_text or STRINGS.SAYABOUTYOURPING.PING_PERFORMANCE_OKAY))
                 elseif (self.netscore) == 1 then -- 客户端网络性能一般
-                    self.ping:SetTextColour(GetColour(COLOUR.YELLOW))
+                    self.ping:SetTextColour(GetColour(packetloss, COLOUR.YELLOW))
                     self.ping:SetText(ping_text .. "\n" .. (packetloss > 0 and packetloss_text or STRINGS.SAYABOUTYOURPING.PING_NETSCORE_OKAY))
                 elseif (self.netscore) == 0 and pingVal > 50 then -- 客户端网络性能优秀,延迟>50
-                    self.ping:SetTextColour(GetColour(COLOUR.YELLOW))
+                    self.ping:SetTextColour(GetColour(packetloss, COLOUR.YELLOW))
                     self.ping:SetText(ping_text .. "\n" .. (packetloss > 0 and packetloss_text or STRINGS.SAYABOUTYOURPING.PING_NETSCORE_GOOD))
                 elseif (self.netscore) == 0 and pingVal <= 50 then -- 客户端网络性能优秀,延迟<=50
-                    self.ping:SetTextColour(GetColour(COLOUR.GREEN))
+                    self.ping:SetTextColour(GetColour(packetloss, COLOUR.GREEN))
                     self.ping:SetText(ping_text .. "\n" .. (packetloss > 0 and packetloss_text or STRINGS.SAYABOUTYOURPING.PING_NETSCORE_GOOD))
                 else
                     self.ping:SetText(ping_text .. (packetloss > 0 and ("\n" .. packetloss_text) or "")) -- 默认显示状态
                     if pingVal <= 50 then
-                        self.ping:SetTextColour(GetColour(COLOUR.GREEN)) -- 绿色
+                        self.ping:SetTextColour(GetColour(packetloss, COLOUR.GREEN)) -- 绿色
                     elseif pingVal <= 120 then
-                        self.ping:SetTextColour(GetColour(COLOUR.YELLOW)) -- 黄色
+                        self.ping:SetTextColour(GetColour(packetloss, COLOUR.YELLOW)) -- 黄色
                     else
                         self.ping:SetTextColour(COLOUR.RED) -- 红色
                     end
