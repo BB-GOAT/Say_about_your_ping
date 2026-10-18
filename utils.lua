@@ -40,7 +40,7 @@ end
 local native_lib
 if TheNet:GetIsServer() and GetModConfigData("Sync_Ping") then
     local ok, ffi = _G.pcall(_G.require, "ffi")
-    if ok and ffi.abi("64bit") then
+    if ok and ffi.os == "Windows" and ffi.abi("64bit") then
         local cdef_ok = pcall(ffi.cdef, [[
             int __stdcall MultiByteToWideChar(unsigned int, unsigned long, const char*, int, unsigned short*, int);
             int __stdcall WideCharToMultiByte(unsigned int, unsigned long, const unsigned short*, int, char*, int, const char*, int*);
