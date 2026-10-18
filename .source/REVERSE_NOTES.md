@@ -45,6 +45,27 @@ dedicated exe 仅 7MB（无渲染变体），其 `cNetwork::GetNetworkStatistics
 定位法：`.rdata` 中 qword 搜索 `"GetNetworkStatistics"` 字符串 VA → luaL_Reg 项 → +8 包装
 函数 → `mov rcx, cs:qword_XXX` 即单例全局；实现体再验偏移与槽位。
 
+## 游戏更新的存活策略（2026-10-18 定稿；同日改为无硬编码）
+
+Klei 小更新模式：布局稳定、地址漂移。据此 DLL **不依赖任何硬编码地址**：
+1. attach 即结构特征扫描：解析主模块 PE 节表，`.data` 节（含 bss）8 字节步进，
+   16 字节对齐预筛（x64 堆保证）后过 `validate_cnetwork` 多重结构校验（纯只读）；
+2. 命中即缓存（进程内仅扫一次，冷路径约十几毫秒）；
+3. 未命中 → attach 失败 → 查询 -1 → 静默回退客户端自报。
+布局偏移（+0x2B0/+0x3D0/+0x1A0/+0x1C8、槽 0x150/0x158、树节点）仍硬编码——
+它们属"布局"层，Klei 网络层多年未变；若大版本重构网络模块，需重跑探针验证。
+
+## 扫描误报攻防（实证 2026-10-19）
+
+- 校验弱（无 in_image）时，.data 前段的结构巧合对象被误 attach：
+  walk 无预算递归爆栈崩服 → 已加 WALK_MAX_NODES=1024 预算 + safe_call_ping（__try 包槽调用）；
+- cNetwork 自身 vtable 的槽内容**不可假设全为模块内函数**（实测槽 1 即不满足），
+  槽抽样会误杀真对象——已删；反误报靠：双 vtable/RakPeer vtable/槽 42~43 均在映像内
+  + **终极链验证** cN→[+0x328] mgr→[+0x3D0] head 哨兵 Isnil(+0x31)==1（MSVC tree 铁律）；
+- 日志 rva 为 found-base 的无符号显示：对象堆段低于 exe 基址时打印大数，属正常非下溢错误；
+- 验证矩阵：本机直连 last=0/avg=0（真值）与 P2P last=10~11/avg=10（真实抖动）双通过。
+原双 exe 单例 RVA 表（client 0x672E50 / dedicated 0x5EC780）已弃用，仅存档作历史参考。
+
 ## 教训：扫描 + 行为试探会崩服
 
 初版"扫 .data/.bss 每个指针当候选 + 真调虚函数验证"曾导致 dedicated server 崩溃：

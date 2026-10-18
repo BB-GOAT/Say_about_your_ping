@@ -4,5 +4,5 @@ call "D:\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 cd /d "%~dp0"
 cl /nologo /utf-8 /W4 /O2 /MT /LD pingspy.c /Fe:pingspy_x64.dll
 if errorlevel 1 (echo BUILD FAILED & exit /b 1)
-del /q pingspy.obj pingspy.lib pingspy.exp ..\pingspy_x64.lib ..\pingspy_x64.exp >nul 2>&1
+del /q pingspy.obj pingspy_x64.lib pingspy_x64.exp >nul 2>&1
 echo BUILD OK

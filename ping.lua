@@ -1,8 +1,7 @@
 local modname = debug.getinfo(1).source:match("%.%./mods/([^/]+)/")
 local Widget = require "widgets/widget"
--- local Image = require "widgets/image"
 local TextButton = require "widgets/textbutton"
-local my_user_name = TheNet:GetLocalUserName()
+local my_userid = TheNet:GetUserID()
 local function Say(str, whisper)
     TheNet:Say(str, whisper)
 end
@@ -99,7 +98,6 @@ local Ping = Class(Widget, function(self, owner)
     self.root = self:AddChild(Widget("root"))
 
     self.ping = self.root:AddChild(TextButton())
-    -- self.ping:SetPosition(60, -30, 0)
     self.ping:SetFont(NUMBERFONT)
     self.ping:SetTextSize(40)
 
@@ -116,7 +114,6 @@ local Ping = Class(Widget, function(self, owner)
 
     self.ping.OnMouseButton = function(_self, button, down, x, y)
         if button == MOUSEBUTTON_RIGHT and down then    --鼠标右键按下
-            -- _self.draging = true    --标志这个widget正在被拖拽
             _self:BBGoat_FollowMouse()     --开启控件的鼠标跟随
         elseif button == MOUSEBUTTON_RIGHT then            --鼠标右键抬起
             _self:StopFollowMouse()        --停止控件的跟随
@@ -157,11 +154,11 @@ function Ping:OnUpdate(dt)
     if type(ClientObjs) == "table" then
         for _, k in pairs(ClientObjs) do
             if k.performance ~= nil then
-                self.performance = type(k.performance) == "number" and k.performance > 0 and k.performance or nil -- 设置服务器性能，优秀时为nil，因为不需要宣告
+                self.performance = type(k.performance) == "number" and k.performance > 0 and math.min(k.performance, 3) or nil -- 设置服务器性能，优秀时为nil，因为不需要宣告
                 self.need_update = true
             end
 
-            if k.netscore ~= nil and k.name == my_user_name then
+            if k.netscore ~= nil and k.userid == my_userid then
                 self.netscore = k.netscore -- 设置客户端网络性能
                 self.need_update = true
             end

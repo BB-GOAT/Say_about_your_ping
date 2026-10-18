@@ -226,7 +226,6 @@ end
 AddClassPostConstruct("widgets/controls", function(self)
     self.ping = self.bottom_root:AddChild(ping())
     self.ping:SetPosition(625, 35)
-    --	self.ping.colour = GetModConfigData("color") == false and "white"
 end)
 
 local function ModFollowMouse(self)

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>                                                /* _ultoa（日志文件名 PID） */
 #include <string.h>
 
 /* ============ 引擎逆向常量（client/server 双 exe 反汇编实证，见 .source/REVERSE_NOTES.md） ============ */
@@ -13,8 +14,6 @@
 #define VT_OFF_LAST     0x158                 /* vtable 槽 43 = GetLastPing(AddressOrGUID*)，ping 生成码证实 */
 #define AOG_SIZE        10                    /* fork 的 AddressOrGUID：guid.g(8)@0 + systemIndex(2)@8 */
 #define CN_CHECK_OFF    0x330                 /* cNetwork 校验可读范围 */
-#define RVA_CN_CLIENT   0x672E50              /* client exe：cNetwork 单例全局 qword_140672E50 */
-#define RVA_CN_SERVER   0x5EC780              /* dedicated exe：cNetwork 单例全局 qword_1405EC780 */
 #define MGR_OFF_TREE    0x3D0                 /* 管理器内 ClientObject 红黑树 head 指针（mgr = cN+0x328；head = *(mgr+0x3D0)） */
 #define CO_OFF_GUID     0x1A0                 /* ClientObject：RakNetGUID（g@0，hex dump 实证：随机 64 位） */
 #define CO_OFF_USERID   0x30                  /* ClientObject：userid（MSVC string：buf@0x30 size@0x40，hex dump 实证 "KU_xxx" SSO 内联） */
@@ -25,11 +24,13 @@
 
 typedef int (__fastcall *PFN_GetPing)(void* rakpeer, void* aog); /* x64：rcx=this, rdx=&AddressOrGUID */
 
+#define WALK_MAX_NODES 1024             /* 树遍历节点预算：防误报对象的环/深链导致递归爆栈 */
+
 static volatile LONG g_attached = 0;            /* 0 未挂接 / 1 已挂接 */
 static uint64_t g_cnetwork = 0;                 /* 缓存 cNetwork*（查询时实时解引用 RakPeer，容忍连接重建） */
 
 #ifdef PINGSPY_LOG
-static void spy_log(const char* fmt, ...)          /* 开发期诊断日志，写入 DLL 同目录 pingspy.log；发布编译去掉开关 */
+static void spy_log(const char* fmt, ...)          /* 开发期诊断日志，写入 DLL 同目录 pingspy_<pid>.log；发布编译去掉开关 */
 {
     HMODULE self = NULL;
     wchar_t wpath[MAX_PATH];
@@ -95,6 +96,14 @@ static int region_readable(uint64_t addr, size_t len, int need_exec)
 }
 
 /* 纯结构校验：不包含任何被调代码。vtable 表本体在 .rdata（只读不执行），可执行仅用于槽内函数指针。 */
+static uint8_t* g_pe_base;                        /* 主模块基址（attach 扫描前设置，供映像范围判定） */
+static uint64_t g_pe_image_end;                   /* 主模块映像结束地址（SizeOfImage） */
+
+static int in_image(uint64_t p)
+{
+    return p >= (uint64_t)g_pe_base && p < g_pe_image_end;
+}
+
 static int validate_cnetwork(uint64_t cand)
 {
     uint64_t vt1, vt2, rakpeer, vtable, f_avg, f_last;
@@ -105,44 +114,100 @@ static int validate_cnetwork(uint64_t cand)
     vt1 = *(uint64_t*)cand;                            /* cNetwork 多继承双 vtable（ctor 写 [0]/[8]） */
     vt2 = *(uint64_t*)(cand + 8);
     if (!vt1 || !vt2) return 0;
-    if (!region_readable(vt1, 8, 0) || !region_readable(vt2, 8, 0)) return 0;
+    if (!region_readable(vt1, 0x160, 0) || !region_readable(vt2, 8, 0)) return 0;
+    if (!in_image(vt1) || !in_image(vt2)) return 0;   /* vtable 必在主模块 .rdata，堆/其它模块指针皆伪造 */
     if (*(uint8_t*)(cand + 0x30A) > 1) return 0;       /* GetPing 使用的布尔标志 */
 
     rakpeer = *(uint64_t*)(cand + CN_OFF_RAKPEER);     /* 网络未启动时为 NULL：由 Lua 侧重试覆盖 */
     if (!rakpeer || !region_readable(rakpeer, 8, 0)) return 0;
     vtable = *(uint64_t*)rakpeer;
-    /* RakPeerInterface 约 150 个虚函数：0x400 字节连续只读 vtable 是极强的类特征 */
-    if (!vtable || !region_readable(vtable, 0x400, 0)) return 0;
+    /* RakPeerInterface 约 150 个虚函数：0x400 字节连续只读 vtable 且落在映像内是极强的类特征 */
+    if (!vtable || !in_image(vtable) || !region_readable(vtable, 0x400, 0)) return 0;
 
     f_avg  = *(uint64_t*)(vtable + VT_OFF_AVG);
     f_last = *(uint64_t*)(vtable + VT_OFF_LAST);
     if (!f_avg || !f_last) return 0;
+    if (!in_image(f_avg) || !in_image(f_last)) return 0;
     if (!region_readable(f_avg, 1, 1) || !region_readable(f_last, 1, 1)) return 0;
+
+    /* 终极链式验证：cNetwork -> 管理器(+0x328) -> std::tree 哨兵(+0x3D0)，
+     * 哨兵 Isnil(+0x31) 恒为 1（MSVC 红黑树铁律）；attach 首次发生在客户端进服后，
+     * 此时管理器必已就绪，无时序风险 */
+    {
+        uint64_t mgr = *(uint64_t*)(cand + CN_OFF_MGR);
+        uint64_t head;
+        if (!mgr || !region_readable(mgr + MGR_OFF_TREE, 8, 0)) return 0;
+        head = *(uint64_t*)(mgr + MGR_OFF_TREE);
+        if (!head || !region_readable(head, 0x38, 0)) return 0;
+        if (*(uint8_t*)(head + TN_OFF_ISNIL) != 1) return 0;
+    }
 
     return 1;
 }
 
-/* 按 exe 名选单例全局 RVA 直读 cNetwork*；全局由引擎自身写入，无扫描、无试探调用 */
+/* 定位 cNetwork 单例：解析主模块 PE 节表，在可写数据节内按 8 字节步进寻找
+ * 通过结构校验的 cNetwork 单例。不依赖任何硬编码地址——Klei 小更新漂地址不漂布局，
+ * 结构特征比字节签名/固定 RVA 更稳；校验器纯只读，误报/未命中均安全退化为查询 -1 */
+static uint64_t g_scan_result = 0;                 /* 扫描结果缓存（含失败）：每进程只真扫一次 */
+static int g_scan_done = 0;
+static uint64_t scan_cnetwork_fallback(uint8_t* base)
+{
+    uint32_t e_lfanew, num_sec, opt_size, i;
+    uint8_t* sec;
+    uint64_t found = 0;
+
+    if (!base) return 0;
+    if (g_scan_done) return g_scan_result;                         /* 每进程只真扫一次，含失败也缓存 */
+    g_scan_done = 1;
+    e_lfanew = *(uint32_t*)(base + 0x3C);                          /* DOS 头 -> PE 头偏移 */
+    num_sec = *(uint16_t*)(base + e_lfanew + 6);
+    opt_size = *(uint16_t*)(base + e_lfanew + 20);
+    g_pe_base = base;
+    g_pe_image_end = base + *(uint32_t*)(base + e_lfanew + 24 + 56); /* OPTIONAL.SizeOfImage */
+    sec = base + e_lfanew + 24 + opt_size;
+    for (i = 0; i < num_sec && !found; i++) {
+        uint8_t* s = sec + i * 40;
+        /* 只扫 .data（MSVC 将 bss 并入其 VirtualSize），全局单例指针必在此节 */
+        if (s[0] == '.' && s[1] == 'd' && s[2] == 'a' && s[3] == 't' && s[4] == 'a' && s[5] == 0) {
+            uint8_t* p = base + *(uint32_t*)(s + 12);              /* VirtualAddress */
+            uint64_t vsize = *(uint32_t*)(s + 8);                  /* VirtualSize 含 bss 尾部 */
+            uint64_t off;
+            if (vsize > 0x4000000) vsize = 0x4000000;              /* 防解析异常：钳 64MB */
+            for (off = 0; off + 8 <= vsize && !found; off += 8) {
+                uint64_t cand = *(uint64_t*)(p + off);
+                /* C++ 对象指针 16 字节对齐（x64 堆保证），先筛掉 15/16 候选再做昂贵校验 */
+                if (cand > 0x10000 && (cand & 0xF) == 0 && validate_cnetwork(cand)) found = cand;
+            }
+        }
+    }
+#ifdef PINGSPY_LOG
+    spy_log("[pingspy] scan fallback: %s (rva=%llx)", found ? "hit" : "miss",
+            found ? (unsigned long long)(found - (uint64_t)base) : 0ULL);
+#endif
+    return found;
+}
+
+/* 结构特征扫描定位 cNetwork 单例；全局由引擎自身写入，无试探调用 */
 __declspec(dllexport) int __cdecl PN_Attach(void)
 {
-    wchar_t exe[MAX_PATH];
     uint8_t* base = (uint8_t*)GetModuleHandleW(NULL);
-    uint64_t rva, cn;
+    uint64_t cn;
 
     if (g_attached) return 1;
-    if (!base || !GetModuleFileNameW(base, exe, MAX_PATH)) return -1;
+    if (!base) return -1;
 
-    /* dedicated server 进程选 server RVA；listen host 与客户端同为 dontstarve_steam_x64 */
-    rva = (wcsstr(exe, L"dedicated_server") != NULL) ? RVA_CN_SERVER : RVA_CN_CLIENT;
-    cn = *(uint64_t*)(base + rva);
-
-    if (!validate_cnetwork(cn)) {
-        spy_log("[pingspy] attach: validate failed (rva=%llx cn=%llx)", (unsigned long long)rva, (unsigned long long)cn);
+    cn = scan_cnetwork_fallback(base);
+    if (!cn) {
+        static int miss_logged = 0;                                /* miss 日志限幅：每进程只打一次 */
+        if (!miss_logged) {
+            miss_logged = 1;
+            spy_log("[pingspy] attach: struct scan miss");
+        }
         return -2;
     }
     g_cnetwork = cn;
     InterlockedExchange(&g_attached, 1);
-    spy_log("[pingspy] attach: OK (rva=%llx cn=%llx)", (unsigned long long)rva, (unsigned long long)cn);
+    spy_log("[pingspy] attach: OK (rva=%llx)", (unsigned long long)(cn - (uint64_t)base));
     return 1;
 }
 
@@ -171,19 +236,30 @@ static int get_rakpeer(uint64_t* rp_out, uint64_t* vt_out)
     return 1;
 }
 
+/* 槽函数调用硬保险：结构扫描存在误报可能，槽语义不符时任何异常一律接住返回 -1 */
+static int safe_call_ping(uint64_t fn, uint64_t rakpeer, void* aog)
+{
+    __try {
+        return ((PFN_GetPing)fn)((void*)rakpeer, aog);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
 /* slot_off 取 VT_OFF_AVG / VT_OFF_LAST；返回 -1 表示无连接或探针失效 */
 static int query(uint64_t guid, uint64_t slot_off)
 {
     uint64_t rakpeer, vtable;
     unsigned char aog[AOG_SIZE];
-    PFN_GetPing fn;
+    uint64_t fn;
 
     if (!get_rakpeer(&rakpeer, &vtable)) return -1;
 
     *(uint64_t*)aog = guid;
     *(uint16_t*)(aog + 8) = 0xFFFF;                                /* 强制按 guid 查找 */
-    fn = (PFN_GetPing)*(uint64_t*)(vtable + slot_off);
-    return fn((void*)rakpeer, aog);
+    fn = *(uint64_t*)(vtable + slot_off);
+    return safe_call_ping(fn, rakpeer, aog);
 }
 
 /* 读 MSVC std::string（SSO：cap<16 时缓冲内联） */
@@ -218,6 +294,7 @@ static struct {
 #ifdef PINGSPY_LOG
 static unsigned g_dbg_nodes = 0;                   /* 诊断打印限幅，避免每秒轮询刷屏 */
 #endif
+static unsigned g_walk_nodes = 0;                  /* 树遍历已访节点数（预算制，见 WALK_MAX_NODES） */
 
 /* 认证连接判定：ClientObject 的 netid C 字符串（@+0x1EC）非空；服务器自身 self 对象的 netid 为空 */
 static int has_netid(uint64_t co)
@@ -231,6 +308,8 @@ static void walk_tree(uint64_t node, uint64_t head)
     char uid[64], nid[64];
 
     if (g_match.found || !node || node == head) return;
+    if (g_walk_nodes >= WALK_MAX_NODES) return;                    /* 预算耗尽：疑似误报对象的环/深链 */
+    g_walk_nodes++;
     if (!region_readable(node, 0x38, 0)) return;
     if (*(uint8_t*)(node + TN_OFF_ISNIL)) return;                  /* 哨兵 */
 
@@ -279,6 +358,7 @@ __declspec(dllexport) int __cdecl PN_QueryByUserid(const char* userid)
     if (!head || !region_readable(head, 0x38, 0)) return -1;
 
     g_match.found = 0;
+    g_walk_nodes = 0;
     g_match.userid = userid;
     g_match.guid = 0;
     root = *(uint64_t*)head;                                       /* head._Left = 根 */
@@ -292,7 +372,8 @@ __declspec(dllexport) int __cdecl PN_QueryByUserid(const char* userid)
     if (guid == 0 || guid == 0xFFFFFFFFFFFFFFFFULL) return -1;
     {
         int last = query(guid, VT_OFF_LAST);
-        int avg = query(guid, VT_OFF_AVG);
+        int avg = -1;
+        if (last < 0) avg = query(guid, VT_OFF_AVG);               /* avg 惰性：last 有效时不再多调一次引擎 */
         spy_log("[pingspy] query guid=%llx last=%d avg=%d", (unsigned long long)guid, last, avg);
         return last >= 0 ? last : avg;                             /* 两者取有效值 */
     }
@@ -312,6 +393,7 @@ __declspec(dllexport) int __cdecl PN_QueryByUseridAvg(const char* userid)
     if (!head || !region_readable(head, 0x38, 0)) return -1;
 
     g_match.found = 0;
+    g_walk_nodes = 0;
     g_match.userid = userid;
     g_match.guid = 0;
     root = *(uint64_t*)head;                                       /* head._Left = 根 */
