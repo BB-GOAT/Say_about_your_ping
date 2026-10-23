@@ -50,19 +50,16 @@ modimport("languages/" .. lang .. ".lua")                -- 加载翻译文件
 local player_pings = {}                                  -- 存储玩家的Ping值
 rawset(_G, "SayAboutYourPing_PlayerPings", player_pings) -- 允许其它模组获取Ping值数据
 
----------------------------------------------------------------------原生Ping采集---------------------------------------------------------------------
+---------------------------------------------------------------------通过Luajit提供的接口获取玩家Ping值---------------------------------------------------------------------
 
-local native_lib = utils.native_lib
-if native_lib then
+local GetClientPing = TheNet.GetClientPing
+if GetClientPing then
     AddSimPostInit(function()
-        print("[说说你的Ping] 原生Ping采集已加载 (pingspy_x64.dll)")
         _G.staticScheduler:ExecutePeriodic(1, function()
-            -- 直接查询：未就绪时 DLL 内部自动重试挂接并返回 -1；无值则静默等待（自报兑底不受影响）
             for _, client in ipairs(TheNet:GetClientTable() or {}) do
                 local userid = client.userid
                 if userid ~= nil and userid ~= "" then
-                    -- DLL 按 userid 在 ClientObject 树中定位 RakNetGUID，再查该连接的引擎 RTT
-                    local ping = native_lib.PN_QueryByUserid(userid)
+                    local ping = TheNet:GetClientPing(userid)
                     if ping ~= nil and ping >= 0 and player_pings[userid] ~= ping then
                         player_pings[userid] = ping -- 原生值为权威数据，仅在变化时广播
                         SendModRPCToShard(SHARD_MOD_RPC["show_ping"]["send_ping"], nil, userid, ping)
@@ -87,7 +84,7 @@ AddModRPCHandler("show_ping", "send_ping", function(player, ping)
         printinvalid("show_ping.send_ping", player)
         return
     end
-    if native_lib and native_lib.PN_Status() == 1 then
+    if GetClientPing then
         if not player.show_ping_send_native_active then
             player.show_ping_send_native_active = true
             SendModRPCToClient(CLIENT_MOD_RPC["show_ping"]["native_active"], player.userid) -- 取消玩家的上报task
