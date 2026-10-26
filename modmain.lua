@@ -56,7 +56,7 @@ local GetClientPing = TheNet.GetClientPing
 if GetClientPing then
     AddSimPostInit(function()
         _G.staticScheduler:ExecutePeriodic(1, function()
-            for _, client in ipairs(TheNet:GetClientTable() or {}) do
+            for _, client in ipairs(AllPlayers or {}) do
                 local userid = client.userid
                 if userid ~= nil and userid ~= "" then
                     local ping = TheNet:GetClientPing(userid)
